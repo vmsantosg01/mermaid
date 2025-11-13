@@ -356,4 +356,3 @@ This README provides:
 * Telemetry/telecontrol pipelines
 
 The system is modular, testable, and future‑proof.
-
