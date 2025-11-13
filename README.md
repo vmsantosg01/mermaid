@@ -183,7 +183,7 @@ The PAT Controller separates deterministic logic from blocking IO.
 
 ```mermaid
 flowchart TD
-    PAT[pat_controller Process Raspberry Pi)]
+    PAT[pat_controller Process Raspberry Pi]
     CAM[Camera Process]
     GUI[GUI Process]
     LOGP[Logger Process]
