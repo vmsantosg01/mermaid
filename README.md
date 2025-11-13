@@ -1,718 +1,359 @@
-# PAT Controller – System Architecture & Engineering Specification
+# PAT Controller System
 
-## Project Overview
-
-The PAT Controller is a modular, soft–real-time supervisory and control system designed for optical pointing experiments. It operates primarily on a Raspberry Pi and orchestrates a heterogeneous set of sensors, actuators, and optical peripherals. A Teensy 4.1 microcontroller acts as the IO backend, forwarding sensor measurements and executing actuator commands. The controller runs a deterministic state-driven loop, processes telecommands, publishes telemetry to external consumers, and provides a development environment that operates both on real hardware and in a full simulation environment.
-
-The system is designed for long-term portability, enabling future migration toward C++ and increased execution of low-level logic on the microcontroller, without altering higher software layers or interfaces.
+This README provides a complete architectural overview of the **PAT Controller**, including runtime model, abstraction layers, processes, state machines, telemetry/telecontrol paths, and future migration strategy. It also includes **Mermaid diagrams** rendered natively by GitHub.
 
 ---
 
-## High-Level System Architecture
+## 1. High-Level System Overview
 
-### Description
+The PAT Controller is a modular soft–real‑time supervision and control system running on a Raspberry Pi. A Teensy 4.1 microcontroller provides low‑level IO, sensor aggregation, and actuator control. External processes such as the GUI and Logger interact via network transports.
 
-The system consists of several processes and hardware endpoints:
+### High-Level Architecture Diagram
 
-* **Raspberry Pi — PAT Controller Process**
-  Runs the main control loop, state machine, managers, device modeling layer, telemetry, logging, and transport IO threads.
-* **Raspberry Pi — Camera Process**
-  Provides high-frame-rate imaging through a socket-based transport.
-* **Teensy 4.1**
-  Aggregates sensor data (PM, 4QD, thermal) and executes actuator commands for OPAs, Phase Shifters, and future peripherals.
-* **External GUI Process**
-  Sends telecommands; subscribes to telemetry for visualization.
-* **External Logger Process**
-  Subscribes to telemetry/logging streams for long-term storage.
+```mermaid
+flowchart TD
+    GUI[External GUI Process]
+    LOGGER[External Logger Process]
+    CAMERA[Camera Process]
+    RPI[PAT Controller Process on Raspberry Pi]
+    TEENSY[Teensy 4.1 Microcontroller]
 
-All components communicate through well-defined transport layers, ensuring full modularity and the ability to replace hardware with mock implementations.
+    GUI <--> |Telecommands / Telemetry| RPI
+    LOGGER <--> |Telemetry Stream| RPI
+    CAMERA <--> |TCP Frames| RPI
+    RPI <--> |UART Protocol| TEENSY
+```
 
-### High-Level System Diagram
+---
+
+## 2. Layered Architecture
+
+The system is structured into four main layers.
+
+### Layer Diagram
+
+```mermaid
+flowchart TD
+    A[Application Layer]
+    B[Device & Domain Layer]
+    C[Transport & MCU Link Layer]
+    D[Hardware Layer]
+
+    A --> B --> C --> D
+```
+
+---
+
+## 3. Application Layer
+
+Contains the main logic, managers, states, telemetry, telecontrol, configuration and safety.
+
+### Application Layer Diagram
+
+```mermaid
+flowchart TD
+    Controller[Controller]
+    StateManager[State Manager]
+    TelemetryManager[Telemetry Manager]
+    TelecontrolManager[Telecontrol Manager]
+    SensorsManager[Sensors Manager]
+    ActuatorsManager[Actuators Manager]
+    PeripheralsManager[Peripherals Manager]
+    ConfigManager[Config Manager]
+    SafetyManager[Safety Manager]
+
+    Controller --> StateManager
+    Controller --> SensorsManager
+    Controller --> ActuatorsManager
+    Controller --> PeripheralsManager
+    Controller --> TelemetryManager
+    Controller --> TelecontrolManager
+    Controller --> ConfigManager
+    Controller --> SafetyManager
+```
+
+---
+
+## 4. Device & Domain Layer
+
+This layer models every sensor, actuator, and peripheral using stable, high-level interfaces. All hardware interactions go through channel transports.
+
+### Device Layer Diagram
 
 ```mermaid
 flowchart LR
-    subgraph Pi["Raspberry Pi"]
-        Controller["PAT Controller Process"]
-        CameraProc["Camera Process"]
+    subgraph Sensors
+        PM[PowerMeterSensor]
+        QD[FourQDSensor]
+        TH[ThermalSensor]
+        CAM[CameraSensor]
     end
 
-    subgraph External["External Processes"]
-        GUI["GUI Process"]
-        Logger["Logger Process"]
+    subgraph Actuators
+        OPA[OPADevice]
+        PS[PhaseShifterDevice]
     end
 
-    Teensy["Teensy 4.1 MCU"]
-
-    Camera["Camera Hardware"]
-
-    GUI -- Telecommands --> Controller
-    Controller -- Telemetry --> GUI
-    Controller -- Telemetry --> Logger
-    Controller <---> Teensy
-    CameraProc <---> Controller
-    CameraProc --> Camera
+    subgraph Peripherals
+        EDFA[EDFADevice]
+        SFP[SFPDevice]
+        EPS[EPSDevice]
+    end
 ```
 
 ---
 
-## Runtime Model
+## 5. Transport & MCU Link Layer
 
-### Processes
+This layer abstracts physical IO and routing of messages.
 
-* **PAT Controller Process**
+### Transports Diagram
 
-  * Runs deterministic main control loop.
-  * Hosts managers, state machine, safety logic, telemetry and logging pipeline.
-  * Spawns threads for serial IO, camera IO, telemetry, logging, and telecommand reception.
+```mermaid
+flowchart TD
+    Serial[SerialSharedTransport]
+    Socket[SocketSharedTransport]
+    Mock[SharedMockTransport]
 
-* **Camera Process**
+    PMT[PMTransport]
+    QDT[FourQDTransport]
+    THT[ThermalTransport]
+    CAMT[CameraTransport]
+    OPAT[OPACommandTransport]
+    PST[PhaseShifterTransport]
+    EDFAT[EDFACommandTransport]
+    SFPT[SFPTransport]
+    EPST[EPSTransport]
 
-  * Captures frames and metadata.
-  * Serves frames over TCP to the controller.
+    Serial --> PMT
+    Serial --> QDT
+    Serial --> THT
+    Serial --> OPAT
+    Serial --> PST
+    Serial --> EDFAT
+    Serial --> SFPT
+    Serial --> EPST
 
-* **GUI Process**
+    Socket --> CAMT
+    Mock --> PMT
+    Mock --> QDT
+    Mock --> THT
+    Mock --> CAMT
+```
 
-  * Sends telecommands.
-  * Subscribes to telemetry.
+---
 
-* **Logger Process**
+## 6. Hardware Layer
 
-  * Receives telemetry/log streams.
-  * Persists structured data.
+Represents physical devices: Teensy, sensors, actuators, and peripherals.
 
-* **Teensy 4.1**
+### Hardware Diagram
 
-  * Low-level IO backend.
-  * Implements structured serial protocol.
+```mermaid
+flowchart LR
+    TEENSY[Teensy 4.1]
+    PM[Power Meters]
+    QD[4QD Sensors]
+    TH[Thermal Sensors]
+    OPA[OPAs]
+    PS[Phase Shifters]
+    EDFA[EDFAs]
+    SFP[SFPs]
+    EPS[EPS]
+    CAMERA[Camera]
+
+    TEENSY --> PM
+    TEENSY --> QD
+    TEENSY --> TH
+    TEENSY --> OPA
+    TEENSY --> PS
+    TEENSY --> EDFA
+    TEENSY --> SFP
+    TEENSY --> EPS
+    CAMERA -. TCP .- RPI
+```
+
+---
+
+## 7. Runtime Model (Processes & Threads)
+
+The PAT Controller separates deterministic logic from blocking IO.
+
+### Processes Diagram
+
+```mermaid
+flowchart TD
+    PAT[pat_controller Process (Raspberry Pi)]
+    CAM[Camera Process]
+    GUI[GUI Process]
+    LOGP[Logger Process]
+    MCU[Teensy 4.1]
+
+    GUI <--> PAT
+    LOGP <--> PAT
+    CAM <--> PAT
+    PAT <--> MCU
+```
 
 ### Internal Threads
 
-* **Main Loop Thread**
-* **SerialSharedTransport Thread**
-* **SocketSharedTransport Thread**
-* **Telemetry Thread**
-* **Logging Thread**
-* **TelecontrolThread** or **non-blocking poll loop**
-
-### Runtime Threads Diagram
-
 ```mermaid
-flowchart TB
-    Main["Main Loop Thread"]
-    Serial["SerialSharedTransport Thread"]
-    Socket["SocketSharedTransport Thread"]
-    Telemetry["Telemetry Thread"]
-    Logging["Logging Thread"]
-    Telecontrol["Telecontrol Reception"]
+flowchart TD
+    Loop[Main Loop Thread]
+    SerialT[Serial Transport Thread]
+    SocketT[Socket Transport Thread]
+    TeleT[Telemetry Thread]
+    LogT[Logging Thread]
+    Tctrl[Telecontrol Thread or Poll]
 
-    Main --- Serial
-    Main --- Socket
-    Main --- Telecontrol
-
-    Main --> Telemetry
-    Main --> Logging
+    Loop --> TeleT
+    Loop --> LogT
+    SerialT --> Loop
+    SocketT --> Loop
+    Tctrl --> Loop
 ```
 
 ---
 
-## Layered Architecture
+## 8. Teensy Firmware Architecture
 
-The architecture consists of four layers, each defining clear responsibilities and interfaces.
+The Teensy executes fast micro-loops and provides structured snapshots.
 
-### Application Layer
-
-* Main controller orchestrator
-* Finite state machine and all concrete states
-* Managers (Sensors, Actuators, Peripherals)
-* Telemetry, telecontrol, configuration, and safety managers
-* Implements supervision logic and soft real-time control loop
-* Generates telemetry snapshots and log events
-
-### Device & Domain Layer
-
-* High-level device models:
-
-  * Sensors: Power Meter, 4QD, Thermal, Camera
-  * Actuators: OPAs, Phase Shifters
-  * Peripherals: EDFA, SFP, EPS
-* Each device exposes a stable API for initialization, reading, or commanding.
-* Multiplicity: supports multiple devices of each type.
-
-### Transport & MCU Link Layer
-
-* SharedTransports: serial to Teensy, sockets to camera, mock transports
-* ChannelTransports: per-device logical streams
-* MCU protocol abstraction for commands and snapshots
-
-### Hardware Layer
-
-* Teensy 4.1
-* Physical sensors, actuators, and optical peripherals
-* Camera hardware
-
-### Layered Architecture Diagram
+### Teensy Diagram
 
 ```mermaid
-flowchart TB
+flowchart TD
+    Idle[T_IDLE]
+    Manual[T_MANUAL]
+    Track[T_TRACKING]
+    FastLoop[Fast 1 kHz Loop]
+    Hill[Hill-Climb Optimizer]
 
-    App["Application Layer
-    - Controller
-    - States
-    - Managers
-    - Telemetry & Telecontrol"] 
+    Idle --> Manual
+    Manual --> Track
+    Track --> Manual
 
-    Domain["Device & Domain Layer
-    - Sensors
-    - Actuators
-    - Peripherals"] 
-
-    Transport["Transport & MCU Link Layer
-    - SharedTransports
-    - ChannelTransports
-    - MCU Protocol"] 
-
-    HW["Hardware Layer
-    - Teensy 4.1
-    - Camera
-    - Sensors
-    - Actuators
-    - Peripherals"] 
-
-    App --> Domain --> Transport --> HW
+    Track --> FastLoop
+    Track --> Hill
 ```
 
 ---
 
-## Devices & Transports
-
-### Device Types
-
-#### Sensors
-
-* PowerMeterSensor
-* FourQDSensor
-* ThermalSensor
-* CameraSensor
-
-#### Actuators
-
-* OPADevice
-* PhaseShifterDevice
-
-#### Peripherals
-
-* EDFADevice
-* SFPDevice
-* EPSDevice
-
-### Expected APIs
-
-#### Sensor API
-
-* `initialize()`
-* `read() -> ReadingStructure`
-* `shutdown()`
-
-#### Actuator API
-
-* `initialize()`
-* `steer(x, y)` (for OPAs)
-* `get_position()`
-* `get_status()`
-* `shutdown()`
-
-#### Peripheral API
-
-* `enable() / disable()`
-* `set_level(v)`
-* `get_status()`
-
-### ChannelTransports
-
-Each device receives a dedicated logical transport:
-
-* PMTransport
-* FourQDTransport
-* ThermalTransport
-* CameraTransport
-* OPACommandTransport
-* PhaseShifterTransport
-* EDFACommandTransport
-* SFPTransport
-* EPSTransport
-
-### SharedTransports
-
-* **SerialSharedTransport** (UART to Teensy)
-* **SocketSharedTransport** (TCP to camera process)
-* **SharedMockTransport** (simulation)
-
-### MCU Link
-
-High-level protocol provides:
-
-* **MCUCommand**
-  Actuator/peripheral commands directed to Teensy.
-
-* **MCUSnapshot**
-  Bundled sensor and status readings.
-
-### MCU Communication Diagram
-
-```mermaid
-sequenceDiagram
-    participant Pi as Raspberry Pi (PAT Controller)
-    participant T as Teensy 4.1
-
-    Pi->>T: MCUCommand (actuator/peripheral)
-    T-->>Pi: MCUSnapshot (sensors, statuses, health)
-    Pi->>T: Additional commands (queued)
-    T-->>Pi: Continuous periodic snapshots
-```
-
----
-
-## Control Loop Execution Model
-
-### Step-by-Step Description
-
-1. **Fetch telecommands**
-   Non-blocking retrieval from telecontrol transport.
-
-2. **Process telecommands**
-   Validation, state transitions, manual controls, parameter updates, safety commands.
-
-3. **Acquire sensor data**
-   Managers query all sensors via ChannelTransports.
-
-4. **Execute active state**
-   State logic computes actuator and peripheral actions.
-
-5. **Issue commands**
-   Managers send instructions to OPAs, Phase Shifters, and peripherals.
-
-6. **Build telemetry snapshot**
-   Consolidated system state (sensors, actuators, peripherals, timing).
-
-7. **Generate log events**
-   Structured, timestamped events for diagnostics.
-
-8. **Loop timing synchronization**
-   Ensures soft real-time target period and logs drift.
-
-### Control Loop Sequence Diagram
-
-```mermaid
-sequenceDiagram
-    participant Loop as Main Loop
-    participant TC as TelecontrolManager
-    participant SM as StateManager
-    participant Sensors as SensorsManager
-    participant Acts as ActuatorsManager
-    participant Tele as TelemetryManager
-    participant Log as LoggingManager
-
-    Loop->>TC: fetch_pending()
-    TC-->>Loop: telecommands
-
-    Loop->>TC: process(telecommands)
-
-    Loop->>Sensors: read_all()
-    Sensors-->>Loop: sensor_snapshot
-
-    Loop->>SM: execute(sensor_snapshot)
-    SM-->>Loop: actions
-
-    Loop->>Acts: issue(actions)
-
-    Loop->>Tele: build_snapshot()
-    Tele-->>Loop: telemetry_object
-
-    Loop->>Log: emit_events()
-
-    Loop->>Loop: sleep_until_next_period()
-```
-
----
-
-## State Machine & Controller Behavior
-
-### Definitions and Roles
-
-* **IdleState** — minimal activity, waiting for commands.
-* **ManualState** — direct operator control (manual OPA/PS steering).
-* **AcquisitionState** — search patterns or raster scans to locate target.
-* **TrackingState** — closed-loop tracking using PM/4QD feedback.
-* **CalibrationState** — device calibration routines.
-* **DiagnosticsState** — internal tests or sensor validation.
-* **ErrorState** — safe fallback after critical faults.
-
-Transitions are triggered by:
-
-* Telecommands
-* Internal conditions
-* Timeouts
-* Safety system events
+## 9. Operational States
 
 ### State Machine Diagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle
-    Idle --> Manual : telecommand
-    Idle --> Acquisition : telecommand
+    Idle
+    Manual
+    Acquisition
+    Tracking
+    Error
 
-    Manual --> Idle : stop
-    Manual --> Error : fault
+    Idle --> Manual
+    Idle --> Acquisition
+    Idle --> Tracking
 
-    Acquisition --> Tracking : target_found
-    Acquisition --> Idle : abort
-    Acquisition --> Error : fault
-
-    Tracking --> Idle : stop
-    Tracking --> Acquisition : lost_target
-    Tracking --> Error : fault
-
-    Calibration --> Idle : done
-    Calibration --> Error : fault
-
-    Diagnostics --> Idle : done
-
-    Idle --> Calibration : telecommand
-    Idle --> Diagnostics : telecommand
-
-    Error --> Idle : reset
+    Manual --> Idle
+    Acquisition --> Tracking
+    Tracking --> Acquisition
+    Tracking --> Idle
+    * --> Error
 ```
 
 ---
 
-## Telecontrol Architecture
+## 10. Main Control Loop
 
-### Telecommands
-
-* State transitions
-* Manual steering inputs
-* Thresholds and configuration commands
-* Safety commands (safe mode, emergency stop)
-* Peripheral enable/disable
-* Parameter tuning
-
-### TelecontrolTransport
-
-Implements a non-blocking channel for receiving telecommands:
-
-* ZeroMQ or TCP
-* Parses and normalizes TelecontrolCommand objects
-* Exposed through TelecontrolManager
-
-### Integration with GUI
-
-* GUI sends telecommands through the transport
-* GUI subscribes to telemetry
-* GUI displays:
-
-  * Sensor values
-  * OPA/PS statuses
-  * Peripherals
-  * Current state
-  * Safety faults
-
----
-
-## Telemetry Architecture
-
-### Snapshot Structure
-
-A telemetry snapshot includes:
-
-* Current state metadata
-* All sensor readings
-* Actuator positions and statuses
-* Peripheral statuses
-* Safety system state
-* Loop timing information
-* Teensy health data
-
-### Telemetry Publishing Thread
-
-* Drains telemetry queue
-* Serializes using JSON/Protobuf/etc.
-* Publishes via PUB socket or TCP stream
-* Independent from main loop
-
-### GUI & Logger Integration
-
-* Both processes subscribe independently
-* GUI visualizes
-* Logger persists snapshots
-* No dependency on controller timing
-
----
-
-## Logging Pipeline
-
-### Event Flow
-
-* Every subsystem emits structured log events
-* Events sent to a concurrent logging queue
-* Logging thread drains queue and writes to disk
-* Disk IO fully isolated from control loop
-
-### Logging Thread Behavior
-
-* Buffered writes
-* Rotating logs or JSON logs
-* Optional export over network
-* Records:
-
-  * Loop diagnostics
-  * Telecommand handling
-  * State transitions
-  * Faults
-  * Device errors
-
----
-
-## Mocking & Simulation Environment
-
-### MockTransport
-
-* Fully in-memory SharedMockTransport
-* Mimics serial and socket transports
-* Used in CI and offline development
-
-### MockSensors
-
-* Simulated PM/4QD/thermal/camera data
-* Reproducible test scenarios
-
-### Simulation Snapshots
-
-* Synthetic MCUSnapshots and camera frames
-* Controlled noise, drift, and delays
-
-### CI Usage
-
-* Automated tests use mock mode
-* No hardware required
-* Enables regression and replay testing
-
----
-
-## Development Guide
-
-### Setup
-
-* Install Python dependencies
-* Connect Teensy or enable mock mode
-* Run controller via main entry point
-
-### Folder Layout (conceptual)
-
-```
-pat_controller/
-    application/
-    devices/
-    transports/
-    mcu_link/
-    states/
-    managers/
-    telemetry/
-    logging/
-    mock/
-    tests/
-```
-
-### Running in Mock Mode
-
-* Use SharedMockTransport
-* Enable simulated camera transport
-* Load mock configuration
-
-### Extending Modules
-
-* Add new devices by defining:
-
-  * Device class
-  * ChannelTransport
-  * Teensy protocol mapping (if applicable)
-* Add new states by extending State base class
-* Add new telemetry fields by modifying TelemetryManager
-
----
-
-## Future Migration Path
-
-### Teensy as Active Controller
-
-* Teensy executes faster control loops
-* Raspberry Pi becomes supervisory layer
-* Teensy enforces additional safety rules
-
-### C++ Migration
-
-* Designed around stable interfaces
-* Device layer and transport abstractions portable
-* State machine and control logic can be ported incrementally
-
-### Transport Evolution
-
-* Move from line-based to binary frames
-* Increase throughput and reliability
-* Expand MCUSnapshot and MCUCommand semantics
-
----
-
-## Appendix: All Mermaid Diagrams
-
-### High-Level Architecture
+### Control Loop Diagram
 
 ```mermaid
-flowchart LR
-    subgraph Pi["Raspberry Pi"]
-        Controller["PAT Controller Process"]
-        CameraProc["Camera Process"]
-    end
+flowchart TD
+    TC[Fetch Telecommands]
+    PC[Process Telecommands]
+    SR[Acquire Sensor Data]
+    ES[Execute Active State]
+    AC[Issue Actuator Commands]
+    TM[Build Telemetry]
+    LG[Generate Logs]
+    TS[Timing Sync]
 
-    subgraph External["External Processes"]
-        GUI["GUI Process"]
-        Logger["Logger Process"]
-    end
-
-    Teensy["Teensy 4.1 MCU"]
-
-    Camera["Camera Hardware"]
-
-    GUI -- Telecommands --> Controller
-    Controller -- Telemetry --> GUI
-    Controller -- Telemetry --> Logger
-    Controller <---> Teensy
-    CameraProc <---> Controller
-    CameraProc --> Camera
+    TC --> PC --> SR --> ES --> AC --> TM --> LG --> TS --> TC
 ```
 
-### Runtime Threads
+---
+
+## 11. Telecontrol Architecture
 
 ```mermaid
-flowchart TB
-    Main["Main Loop Thread"]
-    Serial["SerialSharedTransport Thread"]
-    Socket["SocketSharedTransport Thread"]
-    Telemetry["Telemetry Thread"]
-    Logging["Logging Thread"]
-    Telecontrol["Telecontrol Reception"]
+flowchart TD
+    GUI[GUI / External Controller]
+    TT[Telecontrol Transport]
+    TM[Telecontrol Manager]
+    SM[State Manager]
+    CM[Config Manager]
+    AM[Actuators Manager]
+    PM[Peripherals Manager]
 
-    Main --- Serial
-    Main --- Socket
-    Main --- Telecontrol
-
-    Main --> Telemetry
-    Main --> Logging
+    GUI --> TT --> TM
+    TM --> SM
+    TM --> CM
+    TM --> AM
+    TM --> PM
 ```
 
-### Layered Architecture
+---
+
+## 12. Telemetry & External Integration
+
+### Telemetry Pipeline
 
 ```mermaid
-flowchart TB
+flowchart TD
+    Loop[Main Loop]
+    TM[Telemetry Manager]
+    TThread[Telemetry Thread]
+    GUI[GUI]
+    LOG[Logger]
 
-    App["Application Layer
-    - Controller
-    - States
-    - Managers
-    - Telemetry & Telecontrol"] 
-
-    Domain["Device & Domain Layer
-    - Sensors
-    - Actuators
-    - Peripherals"] 
-
-    Transport["Transport & MCU Link Layer
-    - SharedTransports
-    - ChannelTransports
-    - MCU Protocol"] 
-
-    HW["Hardware Layer
-    - Teensy 4.1
-    - Camera
-    - Sensors
-    - Actuators
-    - Peripherals"] 
-
-    App --> Domain --> Transport --> HW
+    Loop --> TM --> TThread
+    TThread --> GUI
+    TThread --> LOG
 ```
 
-### MCU Communication
+---
+
+## 13. Logging Pipeline
 
 ```mermaid
-sequenceDiagram
-    participant Pi as Raspberry Pi (PAT Controller)
-    participant T as Teensy 4.1
+flowchart TD
+    ANY[Any Module]
+    Q[Logging Queue]
+    LT[Logging Thread]
+    DISK[Disk or External Sink]
 
-    Pi->>T: MCUCommand (actuator/peripheral)
-    T-->>Pi: MCUSnapshot (sensors, statuses, health)
-    Pi->>T: Additional commands (queued)
-    T-->>Pi: Continuous periodic snapshots
+    ANY --> Q --> LT --> DISK
 ```
 
-### Control Loop
+---
 
-```mermaid
-sequenceDiagram
-    participant Loop as Main Loop
-    participant TC as TelecontrolManager
-    participant SM as StateManager
-    participant Sensors as SensorsManager
-    participant Acts as ActuatorsManager
-    participant Tele as TelemetryManager
-    participant Log as LoggingManager
+## 14. Migration Path
 
-    Loop->>TC: fetch_pending()
-    TC-->>Loop: telecommands
+The design is compatible with future C++ Teensy logic and richer MCU protocols.
 
-    Loop->>TC: process(telecommands)
+---
 
-    Loop->>Sensors: read_all()
-    Sensors-->>Loop: sensor_snapshot
+## 15. Summary
 
-    Loop->>SM: execute(sensor_snapshot)
-    SM-->>Loop: actions
+This README provides:
 
-    Loop->>Acts: issue(actions)
+* A full architectural description
+* Layer diagrams
+* Runtime/process diagrams
+* Firmware state diagrams
+* Control loop flow
+* Telemetry/telecontrol pipelines
 
-    Loop->>Tele: build_snapshot()
-    Tele-->>Loop: telemetry_object
+The system is modular, testable, and future‑proof.
 
-    Loop->>Log: emit_events()
-
-    Loop->>Loop: sleep_until_next_period()
-```
-
-### State Machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Manual : telecommand
-    Idle --> Acquisition : telecommand
-
-    Manual --> Idle : stop
-    Manual --> Error : fault
-
-    Acquisition --> Tracking : target_found
-    Acquisition --> Idle : abort
-    Acquisition --> Error : fault
-
-    Tracking --> Idle : stop
-    Tracking --> Acquisition : lost_target
-    Tracking --> Error : fault
-
-    Calibration --> Idle : done
-    Calibration --> Error : fault
-
-    Diagnostics --> Idle : done
-
-    Idle --> Calibration : telecommand
-    Idle --> Diagnostics : telecommand
-
-    Error --> Idle : reset
-```
