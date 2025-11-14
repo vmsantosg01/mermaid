@@ -437,6 +437,9 @@ flowchart TB
 
     SerialSharedTransport --> Teensy
     SocketSharedTransport --> Camera
+
+    Teensy --> SensorsHW
+    Teensy --> ActuatorsHW
 ```
 
 ---
